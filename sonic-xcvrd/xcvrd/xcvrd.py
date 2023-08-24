@@ -8,7 +8,6 @@
 try:
     import ast
     import copy
-    import functools
     import json
     import multiprocessing
     import os
@@ -1079,6 +1078,12 @@ class CmisManagerTask:
     def get_cmis_dp_deinit_duration_secs(self, api):
         return api.get_datapath_deinit_duration()/1000
 
+    def get_cmis_module_power_up_duration_secs(self, api):
+        return api.get_module_pwr_up_duration()/1000
+
+    def get_cmis_module_power_down_duration_secs(self, api):
+        return api.get_module_pwr_down_duration()/1000
+
     def is_cmis_application_update_required(self, api, channel, speed):
         """
         Check if the CMIS application update is required
@@ -1491,8 +1496,9 @@ class CmisManagerTask:
                         api.set_lpmode(False)
                         self.port_dict[lport]['cmis_state'] = self.CMIS_STATE_AP_CONF
                         dpDeinitDuration = self.get_cmis_dp_deinit_duration_secs(api)
-                        self.log_notice("{} DpDeinit duration {} secs".format(lport, dpDeinitDuration))
-                        self.port_dict[lport]['cmis_expired'] = now + datetime.timedelta(seconds=dpDeinitDuration)
+                        modulePwrUpDuration = self.get_cmis_module_power_up_duration_secs(api)
+                        self.log_notice("{} DpDeinit duration {} secs, modulePwrUp duration {} secs".format(lport, dpDeinitDuration, modulePwrUpDuration))
+                        self.port_dict[lport]['cmis_expired'] = now + datetime.timedelta(seconds = max(modulePwrUpDuration, dpDeinitDuration))
                     elif state == self.CMIS_STATE_AP_CONF:
                         # TODO: Use fine grained time when the CMIS memory map is available
                         if not self.check_module_state(api, ['ModuleReady']):
@@ -1794,9 +1800,8 @@ class SfpStateUpdateTask(object):
         timeout = RETRY_PERIOD_FOR_SYSTEM_READY_MSECS
         state = STATE_INIT
         sel, asic_context = port_mapping.subscribe_port_config_change(self.namespaces)
-        port_change_event_handler = functools.partial(self.on_port_config_change, stopping_event)
         while not stopping_event.is_set():
-            port_mapping.handle_port_config_change(sel, asic_context, stopping_event, self.port_mapping, helper_logger, port_change_event_handler)
+            port_mapping.handle_port_config_change(sel, asic_context, stopping_event, self.port_mapping, helper_logger, self.on_port_config_change)
 
             # Retry those logical ports whose EEPROM reading failed or timeout when the SFP is inserted
             self.retry_eeprom_reading()

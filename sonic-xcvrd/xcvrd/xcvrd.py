@@ -845,8 +845,17 @@ class CmisManagerTask(threading.Thread):
                 self.port_dict[lport]['subport'] = int(port_change_event.port_dict['subport'])
 
             self.force_cmis_reinit(lport, 0)
+
+            if not self.port_mapping.is_logical_port(lport):
+                port_change_event.event_type = port_change_event.PORT_ADD
+                self.port_mapping.handle_port_change_event(port_change_event)
         else:
-            self.port_dict[lport]['cmis_state'] = self.CMIS_STATE_REMOVED
+            if pport != -1:
+                # To prevent duplicate remove event, only care about delete port here
+                # For transceiver removed event would be handled in task_worker()
+                self.port_dict[lport]['cmis_state'] = self.CMIS_STATE_REMOVED
+                port_change_event.event_type = port_change_event.PORT_REMOVE
+                self.port_mapping.handle_port_change_event(port_change_event)
 
 
     def get_cmis_dp_init_duration_secs(self, api):

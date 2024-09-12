@@ -17,6 +17,7 @@ LANE_SPEED_KEY_PREFIX = "speed:"
 VENDOR_KEY = 'vendor_key'
 MEDIA_KEY = 'media_key'
 LANE_SPEED_KEY = 'lane_speed_key'
+MODULE_KEY = 'module_key'
 SYSLOG_IDENTIFIER = "xcvrd"
 helper_logger = logger.Logger(SYSLOG_IDENTIFIER)
 
@@ -63,7 +64,13 @@ def get_lane_speed_key(physical_port, port_speed, lane_count):
     return lane_speed_key
 
 
-def get_media_settings_key(physical_port, transceiver_dict, port_speed, lane_count):
+# This function is going to build the keys which used to match
+# the corresponding pre-emphasis valus in media_settings.json.
+# 1.Vendor Key = (Vendor name + Vendor PN)
+# 2.Module key = (Sfp type + Specification compliance + Length)
+# 3.Lane Speed KEY = (Host electrical interface id)
+# 4.Media Key = (Media type + lane speed)
+def get_media_settings_key(physical_port, transceiver_dict, port_speed, lane_count, logical_port, port_dict):
     sup_compliance_str = '10/40G Ethernet Compliance Code'
     sup_len_str = 'Length Cable Assembly(m)'
     vendor_name_str = transceiver_dict[physical_port]['manufacturer']
@@ -76,8 +83,10 @@ def get_media_settings_key(physical_port, transceiver_dict, port_speed, lane_cou
 
     media_compliance_dict_str = transceiver_dict[physical_port]['specification_compliance']
     media_compliance_code = ''
-    media_type = ''
+    sfp_type = ''
+    module_key = ''
     media_key = ''
+    lane_speed = 0
     media_compliance_dict = {}
 
     try:
@@ -92,30 +101,42 @@ def get_media_settings_key(physical_port, transceiver_dict, port_speed, lane_cou
     except ValueError as e:
         helper_logger.log_error("Invalid value for port {} 'specification_compliance': {}".format(physical_port, media_compliance_dict_str))
 
-    media_type = transceiver_dict[physical_port]['type_abbrv_name']
+    sfp_type = transceiver_dict[physical_port]['type_abbrv_name']
 
-    if len(media_type) != 0:
-        media_key += media_type
+    if len(sfp_type) != 0:
+        module_key += sfp_type
+
     if len(media_compliance_code) != 0:
-        media_key += '-' + media_compliance_code
+        module_key += '-' + media_compliance_code
         sfp = xcvrd.platform_chassis.get_sfp(physical_port)
         api = sfp.get_xcvr_api()
         if xcvrd.is_cmis_api(api):
             if media_compliance_code == "passive_copper_media_interface":
                 if media_len != 0:
-                    media_key += '-' + str(media_len) + 'M'
+                    module_key += '-' + str(media_len) + 'M'
         else:
             if media_len != 0:
-                media_key += '-' + str(media_len) + 'M'
+                module_key += '-' + str(media_len) + 'M'
     else:
-        media_key += '-' + '*'
+        module_key += '-' + '*'
+
+    if port_dict:
+        try:
+            num_lanes = len(list(port_dict[logical_port]['lanes'].split(",")))
+            _port_speed = int(port_dict[logical_port]['speed'])
+            lane_speed = int(_port_speed/num_lanes)
+        except:
+            lane_speed = 0
+
+    media_key = get_media_key(physical_port) + '-' + str(lane_speed)
 
     lane_speed_key = get_lane_speed_key(physical_port, port_speed, lane_count)
     # return (vendor_key, media_key, lane_speed_key)
     return {
         VENDOR_KEY: vendor_key,
-        MEDIA_KEY: media_key,
-        LANE_SPEED_KEY: lane_speed_key
+        MODULE_KEY: module_key,
+        LANE_SPEED_KEY: lane_speed_key,
+        MEDIA_KEY: media_key
     }
 
 
@@ -164,6 +185,7 @@ def get_media_val_str(num_logical_ports, lane_dict, logical_idx):
         media_val_str = get_media_val_str_from_dict(logical_media_dict)
     else:
         media_val_str = get_media_val_str_from_dict(lane_dict)
+
     return media_val_str
 
 
@@ -180,7 +202,8 @@ def get_media_settings_value(physical_port, key):
         for dict_key in media_dict.keys():
             if (re.match(dict_key, key[VENDOR_KEY]) or \
                 re.match(dict_key, key[VENDOR_KEY].split('-')[0]) # e.g: 'AMPHENOL-1234'
-                or re.match(dict_key, key[MEDIA_KEY]) ): # e.g: 'QSFP28-40GBASE-CR4-1M'
+                or re.match(dict_key, key[MEDIA_KEY])
+                or re.match(dict_key, key[MODULE_KEY])):  # e.g: 'QSFP28-40GBASE-CR4-1M'
                 if is_si_per_speed_supported(media_dict[dict_key]):
                     if key[LANE_SPEED_KEY] is not None and key[LANE_SPEED_KEY] in media_dict[dict_key]: # e.g: 'speed:400GAUI-8'
                         return media_dict[dict_key][key[LANE_SPEED_KEY]]
@@ -263,8 +286,20 @@ def get_speed_and_lane_count(port, cfg_port_tbl):
     return port_speed, lane_count
 
 
+def get_media_key(physical_port):
+
+    is_copper = xcvrd._wrapper_is_copper(physical_port)
+
+    if is_copper is True:
+        return 'COPPER'
+    elif is_copper is False:
+        return 'OPTICAL'
+    else:
+        return 'NONE'
+
+
 def notify_media_setting(logical_port_name, transceiver_dict,
-                         app_port_tbl, cfg_port_tbl, port_mapping):
+                         app_port_tbl, cfg_port_tbl, port_mapping, port_dict):
 
     if not media_settings_present():
         return
@@ -297,7 +332,7 @@ def notify_media_setting(logical_port_name, transceiver_dict,
                                            ganged_member_num, ganged_port)
         
         ganged_member_num += 1
-        key = get_media_settings_key(physical_port, transceiver_dict, port_speed, lane_count)
+        key = get_media_settings_key(physical_port, transceiver_dict, port_speed, lane_count, logical_port_name, port_dict)
         helper_logger.log_debug("Retrieving media settings for port {}, operating at a speed of {} with a lane count of {}, using the following lookup keys: {}".format(logical_port_name, port_speed, lane_count, key))
         media_dict = get_media_settings_value(physical_port, key)
 
